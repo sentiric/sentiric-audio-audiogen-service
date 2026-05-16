@@ -1,4 +1,4 @@
-# 1. Altyapı
+# 1. Ses ve Model Temeli (En üstte olmalı)
 sentencepiece
 encodec
 librosa
@@ -6,19 +6,19 @@ soundfile
 scipy
 einops>=0.7.0
 
-# 2. ML Stack
+# 2. Sentiric ML Stack (OmniVoice ile tam hizalı)
 torch==2.5.1
 torchaudio==2.5.1
-# Audio eklentisiyle birlikte
-transformers[audio]==4.46.3
+# [CRITICAL] Transformers'ı Main dalından (AudioGen'in olduğu yer) çekiyoruz
+git+https://github.com/huggingface/transformers.git
 accelerate>=0.29.0
 
-# 3. Sentiric Compliance
+# 3. Sentiric Standartları
 protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
 
-# 4. Web & Infra
+# 4. Web & Ops
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0

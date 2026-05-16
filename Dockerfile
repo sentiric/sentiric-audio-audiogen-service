@@ -19,27 +19,29 @@ RUN uv venv $VIRTUAL_ENV --python /usr/bin/python3.10
 
 COPY requirements.txt .
 
-# 1. AŞAMA: OmniVoice Altyapısı (Torch 2.5.1 + cu124)
+# OmniVoice Altyapısı
 RUN uv pip install --no-cache \
     torch==2.5.1 \
     torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu124
 
-# 2. AŞAMA: Transformers ve Diğerleri
+# Geri kalanlar (Transformers Main'den çekilecek)
 RUN uv pip install --no-cache -r requirements.txt
 
 COPY . .
 
-# Klasör ve İzin Yapılandırması (Fail-safe)
+# Klasörleri oluştur ve tüm izinleri tek seferde ver
 RUN mkdir -p /app/model-cache && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --no-create-home --uid 1001 --ingroup appgroup appuser && \
     chown -R appuser:appgroup /app && \
+    # [CRITICAL] Konteyner içindeki sertifika mount noktasına müdahale edemeyiz, 
+    # bu yüzden host makinede düzeltmeliyiz. Ancak model-cache'i garantiliyoruz.
     chmod -R 777 /app/model-cache
 
 USER appuser
 ENV HF_HOME="/app/model-cache"
-ENV HF_HUB_DISABLE_PROGRESS_BARS=1
+ENV TRANSFORMERS_CACHE="/app/model-cache"
 
 EXPOSE 16320 16321
 
