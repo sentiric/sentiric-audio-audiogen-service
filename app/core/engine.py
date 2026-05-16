@@ -6,16 +6,15 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# Transformers importlarını korumalı yapıyoruz
+# Transformers kontrolü
 try:
     from transformers import AutoProcessor, AudioGenForConditionalGeneration
+    import encodec
 except ImportError as e:
-    # Eğer global import başarısız olursa, alt modülden zorla çekmeyi dene
-    try:
-        from transformers.models.audiogen.modeling_audiogen import AudioGenForConditionalGeneration
-        from transformers.models.audiogen.processing_audiogen import AutoProcessor
-    except:
-        raise ImportError(f"AudioGen requirements missing (encodec, sentencepiece, etc.): {e}")
+    raise ImportError(
+        f"CRITICAL: AudioGen dependencies failed to load. "
+        f"Ensure 'encodec' and 'transformers[audio]' are correctly installed. Error: {e}"
+    )
 
 logger = structlog.get_logger()
 
@@ -34,6 +33,7 @@ class AudioGenEngine:
     def initialize(self):
         logger.info(f"Loading {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
+            # Model yüklenirken işlemciyi (processor) zorla hazırla
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
             self.model = AudioGenForConditionalGeneration.from_pretrained(settings.MODEL_ID).to(settings.DEVICE)
             logger.info("AudioGen Ready.", event_id="MODEL_READY")
@@ -41,17 +41,17 @@ class AudioGenEngine:
             logger.error(f"Load Fail: {e}", event_id="MODEL_INIT_FAIL")
 
     async def generate_async(self, prompt: str, duration: int, job_id: str, trace_id: str, tenant_id: str):
-        logger.info("Generating SFX...", event_id="SFX_GEN_START", trace_id=trace_id)
+        logger.info(f"Generating SFX for: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
         path = f"/tmp/{job_id}.wav"
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # AudioGen tokens (approx 50 per sec)
+            # 1 saniye ses için yaklaşık 50 token. Max 500 token (10sn) sınırı.
             tokens = min(duration * 50, 500) 
             audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             sampling_rate = self.model.config.audio_encoder.sampling_rate
             
-            # CPU'ya çek ve numpy'a çevir
+            # Ses verisini CPU'ya al ve numpy formatına çevir
             audio_data = audio_values[0, 0].cpu().numpy()
             scipy.io.wavfile.write(path, rate=sampling_rate, data=audio_data)
             
@@ -60,10 +60,8 @@ class AudioGenEngine:
                 torch.cuda.empty_cache()
             
         try:
-            # 1. Render Audio
             await asyncio.to_thread(render)
             
-            # 2. Upload S3
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
             if os.path.exists(path): os.remove(path)
@@ -71,7 +69,6 @@ class AudioGenEngine:
             s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
             logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
             
-            # 3. Publish Success Event
             await self._publish_event(
                 routing_key="media.generation.completed",
                 event_type="media.generation.completed",
@@ -83,8 +80,7 @@ class AudioGenEngine:
             err_msg = str(e)
             logger.error(f"SFX Render failed: {err_msg}", event_id="SFX_GEN_FAIL", trace_id=trace_id)
             if os.path.exists(path): os.remove(path)
-                
-            # Publish Failed Event
+            
             await self._publish_event(
                 routing_key="media.generation.failed",
                 event_type="media.generation.failed",
