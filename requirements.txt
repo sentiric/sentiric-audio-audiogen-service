@@ -1,24 +1,20 @@
-# Sentiric ML Stack (Modern & Stable)
+# 1. Core ML (Order is critical for UV)
 torch==2.5.1
 torchaudio==2.5.1
-# AudioGen desteği v4.44+ ile stabil oldu
-transformers>=4.46.3
-accelerate>=0.29.0
+# 2. AudioGen Specifics (Must be installed BEFORE transformers checks them)
 sentencepiece
-einops>=0.7.0
-
-# Sentiric Protobuf/gRPC Standardı
-protobuf>=7.34.0,<8.0.0
-grpcio>=1.62.0
-sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
-
-# AudioGen Core Bağımlılıkları (Transformers'ın modeli tanıması için ŞART)
 encodec
 librosa
 soundfile
-scipy
-
-# Web & Infra
+einops>=0.7.0
+# 3. Transformers (The Engine)
+transformers==4.44.2
+accelerate>=0.29.0
+# 4. Sentiric Stack (Compliance)
+protobuf>=7.34.0,<8.0.0
+grpcio>=1.62.0
+sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
+# 5. Web & Infra
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0
@@ -26,3 +22,4 @@ structlog==24.4.0
 boto3>=1.34.0
 aio-pika>=9.4.0
 python-json-logger>=2.0.7
+scipy

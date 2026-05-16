@@ -6,21 +6,13 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# Hugging Face AudioGen sınıflarını ZORLA yükle (Absolute Import)
+# Transformers Import - Dinamik ve Güvenli Yol
 try:
-    # transformers v4.44+ içinde AudioGen bu yoldadır
-    from transformers import AutoProcessor, AudioGenForConditionalGeneration
-    logger_init = structlog.get_logger()
-    logger_init.info("AudioGen classes loaded via standard path", event_id="IMPORT_SUCCESS")
-except ImportError:
-    try:
-        # Alternatif iç yol (Bypass)
-        from transformers.models.audio_gen.modeling_audio_gen import AudioGenForConditionalGeneration
-        from transformers.models.audio_gen.processing_audio_gen import AudioGenProcessor as AutoProcessor
-        logger_init = structlog.get_logger()
-        logger_init.info("AudioGen classes force-loaded via internal path", event_id="IMPORT_FORCE_SUCCESS")
-    except Exception as e:
-        raise ImportError(f"FATAL: AudioGen classes not found. Check dependencies: {e}")
+    from transformers import AutoProcessor, AutoModelForAudioSeq2Seq
+    # Not: HF AudioGen'i bazen AudioSeq2Seq bazen ConditionalGeneration olarak kaydeder.
+    # initialize içinde model_id'den class'ı otomatik çözeceğiz.
+except ImportError as e:
+    raise ImportError(f"CRITICAL: Transformers base load fail: {e}")
 
 logger = structlog.get_logger()
 
@@ -36,13 +28,19 @@ class AudioGenEngine:
         )
 
     def initialize(self):
-        logger.info(f"Loading SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Initializing SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
+            # Model yüklenirken işlemciyi otomatik çöz
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
-            self.model = AudioGenForConditionalGeneration.from_pretrained(
+            
+            # [CRITICAL FIX]: AudioGenForConditionalGeneration yerine AutoModel kullanıyoruz.
+            # Hugging Face, model_id'ye bakarak doğru sınıfı (AudioGen) kendisi bulacaktır.
+            from transformers import AutoModelForTextToWaveform
+            self.model = AutoModelForTextToWaveform.from_pretrained(
                 settings.MODEL_ID, 
                 torch_dtype=torch.float16 if settings.DEVICE == "cuda" else torch.float32
             ).to(settings.DEVICE)
+            
             self.model.eval()
             logger.info("AudioGen Ready.", event_id="MODEL_READY")
         except Exception as e:
@@ -53,11 +51,13 @@ class AudioGenEngine:
         path = f"/tmp/{job_id}.wav"
         
         def render():
+            # [ARCH-COMPLIANCE] Bloklamayan çıkarım
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # Max duration 10sn sınırı (VRAM güvenliği)
+            # Max duration 10sn (500 token)
             tokens = min(duration * 50, 500) 
             
             with torch.inference_mode():
+                # AudioGen spesifik generate parametreleri
                 audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             
             sampling_rate = self.model.config.audio_encoder.sampling_rate
@@ -66,6 +66,7 @@ class AudioGenEngine:
             
         try:
             await asyncio.to_thread(render)
+            
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
             if os.path.exists(path): os.remove(path)
@@ -77,9 +78,11 @@ class AudioGenEngine:
         except Exception as e:
             err_msg = str(e)
             logger.error(f"SFX Render failed: {err_msg}", event_id="SFX_GEN_FAIL", trace_id=trace_id)
+            if os.path.exists(path): os.remove(path)
             await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
         finally:
-            if settings.DEVICE == "cuda": torch.cuda.empty_cache()
+            if settings.DEVICE == "cuda": 
+                torch.cuda.empty_cache()
 
     async def _publish_event(self, event_type, trace_id, job_id, tenant_id, success, uri, err=""):
         try:
