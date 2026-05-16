@@ -1,23 +1,23 @@
-# Sentiric ML Base
+# Sentiric ML Stack
 torch==2.5.1
 torchaudio==2.5.1
-# AudioGen HF desteği 4.44.0 ile geldi, 4.45.0 en stabildir
-transformers>=4.45.0
+# [CRITICAL FIX]: AudioGen sadece Transformers'ın main branch'inde mevcut
+git+https://github.com/huggingface/transformers.git
 accelerate>=0.29.0
 sentencepiece
 einops>=0.7.0
 
-# Sentiric Protobuf/gRPC Standardı
+# Sentiric Protobuf Standardı (Contracts uyumu için)
 protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
 
-# AudioGen Core (Bunlar olmadan transformers class'ı gizler)
+# AudioGen Core
 encodec
 librosa
 scipy
 
-# Web & Infra
+# Web & Infrastructure
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0
