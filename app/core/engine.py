@@ -6,12 +6,14 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# Transformers Import - En kararlı yol
+# Transformers Import - Dinamik ve En Güvenli Yol
 try:
-    # AudioGen resmi sınıfları transformers >= 4.44.0'da mevcuttur
-    from transformers import AutoProcessor, AudioGenForConditionalGeneration
+    # AutoProcessor ve TextToWaveform (AudioGen'in gerçek sınıfı)
+    from transformers import AutoProcessor, AutoModelForTextToWaveform
+    logger_init = structlog.get_logger()
+    logger_init.info("Transformers Audio Classes Loaded", event_id="IMPORT_SUCCESS")
 except ImportError as e:
-    raise ImportError(f"CRITICAL: AudioGen classes not found. Verify transformers[audio] installation. Error: {e}")
+    raise ImportError(f"CRITICAL: Transformers base classes could not be loaded: {e}")
 
 logger = structlog.get_logger()
 
@@ -27,14 +29,17 @@ class AudioGenEngine:
         )
 
     def initialize(self):
-        logger.info(f"Loading AudioGen Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Initializing SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
+            # İşlemciyi yükle
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
-            # VRAM dostu yükleme
-            self.model = AudioGenForConditionalGeneration.from_pretrained(
+            
+            # [CRITICAL FIX]: AutoModelForTextToWaveform kullanarak sınıf ismini otomatik çözdür
+            self.model = AutoModelForTextToWaveform.from_pretrained(
                 settings.MODEL_ID, 
                 torch_dtype=torch.float16 if settings.DEVICE == "cuda" else torch.float32
             ).to(settings.DEVICE)
+            
             self.model.eval()
             logger.info("AudioGen Ready.", event_id="MODEL_READY")
         except Exception as e:
@@ -46,8 +51,11 @@ class AudioGenEngine:
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
+            # AudioGen: 1 saniye ~ 50 token.
             tokens = min(duration * 50, 500) 
+            
             with torch.inference_mode():
+                # generate metodu tüm TextToWaveform modellerinde standarttır
                 audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             
             sampling_rate = self.model.config.audio_encoder.sampling_rate
@@ -56,12 +64,14 @@ class AudioGenEngine:
             
         try:
             await asyncio.to_thread(render)
+            
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
             if os.path.exists(path): os.remove(path)
             
             s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
             logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
+            
             await self._publish_event("media.generation.completed", trace_id, job_id, tenant_id, True, s3_uri)
                 
         except Exception as e:
