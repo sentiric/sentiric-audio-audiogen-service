@@ -1,10 +1,8 @@
-# OmniVoice ile aynı base image
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Sistem paketleri (OmniVoice + AudioGen ihtiyaçları)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3-dev python3-pip python3-venv \
     libsndfile1 curl git ffmpeg build-essential \
@@ -21,13 +19,12 @@ RUN uv venv $VIRTUAL_ENV --python /usr/bin/python3.10
 
 COPY requirements.txt .
 
-# OmniVoice Stratejisi: Önce ağır ML paketleri
+# OmniVoice Stratejisi: Önce ML paketleri
 RUN uv pip install --no-cache \
     torch==2.5.1 \
     torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu124
 
-# Diğerleri
 RUN uv pip install --no-cache -r requirements.txt
 
 COPY . .
@@ -39,8 +36,6 @@ RUN mkdir -p /app/model-cache && \
 
 USER appuser
 ENV HF_HOME="/app/model-cache"
-ENV HF_HUB_DISABLE_PROGRESS_BARS=1
-ENV TOKENIZERS_PARALLELISM=false
 
 EXPOSE 16320 16321
 
