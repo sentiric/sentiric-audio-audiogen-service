@@ -1,16 +1,23 @@
+# 1. Önce Kritik Yan Bağımlılıklar (Zorunlu)
+sentencepiece
+encodec
+librosa
+soundfile
+einops>=0.7.0
+
+# 2. Sentiric ML Stack (OmniVoice Alignment)
 torch==2.5.1
 torchaudio==2.5.1
-# Git'ten Audio eklentisiyle birlikte kur
-git+https://github.com/huggingface/transformers.git#egg=transformers[audio]
+# AudioGen desteği v4.45.0 ile stabilize oldu
+transformers[audio]==4.45.2
 accelerate>=0.29.0
-sentencepiece
-einops>=0.7.0
+
+# 3. Sentiric Protobuf/gRPC Standardı (Strict Compliance)
 protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
-encodec
-librosa
-scipy
+
+# 4. Web & Infra
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0
@@ -18,3 +25,4 @@ structlog==24.4.0
 boto3>=1.34.0
 aio-pika>=9.4.0
 python-json-logger>=2.0.7
+scipy

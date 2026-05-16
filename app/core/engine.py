@@ -6,18 +6,18 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# [CRITICAL FIX]: Hugging Face Lazy-Loading mekanizmasını Bypass ediyoruz.
-# Sınıfları fiziksel olarak bulundukları alt modüllerden zorla (Absolute Import) çekiyoruz.
+# Transformers Import - En güvenli yol (AutoModel ve AutoProcessor)
 try:
-    # Modelleme Sınıfı
-    from transformers.models.audio_gen.modeling_audio_gen import AudioGenForConditionalGeneration
-    # İşlemci Sınıfı (AudioGenProcessor olarak adlandırılır)
-    from transformers.models.audio_gen.processing_audio_gen import AudioGenProcessor as AutoProcessor
+    # AudioGen özel sınıflarını top-level'dan çekmeyi dene
+    from transformers import AutoProcessor, AudioGenForConditionalGeneration
     logger_init = structlog.get_logger()
-    logger_init.info("AudioGen classes loaded via Absolute Path", event_id="IMPORT_SUCCESS")
-except Exception as e:
-    # Eğer bu da fail ederse, gerçek hata mesajını (eksik paket adını) göreceğiz.
-    raise ImportError(f"FATAL: Could not force-load AudioGen classes. Check dependencies (encodec, librosa, etc.). Error: {e}")
+    logger_init.info("AudioGen classes loaded successfully", event_id="IMPORT_SUCCESS")
+except ImportError as e:
+    # Eğer top-level'da yoksa, bu genellikle 'encodec' veya 'sentencepiece' eksikliğindendir
+    raise ImportError(
+        f"FATAL: AudioGen classes not registered in transformers. "
+        f"This usually means 'encodec' is missing or protobuf version conflict. Error: {e}"
+    )
 
 logger = structlog.get_logger()
 
@@ -25,43 +25,56 @@ class AudioGenEngine:
     def __init__(self):
         self.processor = None
         self.model = None
-        self.s3 = boto3.client('s3', endpoint_url=settings.S3_ENDPOINT, aws_access_key_id=settings.S3_ACCESS_KEY, aws_secret_access_key=settings.S3_SECRET_KEY, config=Config(signature_version='s3v4'))
+        self.s3 = boto3.client('s3', 
+            endpoint_url=settings.S3_ENDPOINT, 
+            aws_access_key_id=settings.S3_ACCESS_KEY, 
+            aws_secret_access_key=settings.S3_SECRET_KEY, 
+            config=Config(signature_version='s3v4')
+        )
 
     def initialize(self):
-        logger.info(f"Loading AudioGen: {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Loading SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Model yüklenirken VRAM optimizasyonu
+            # Model yüklenirken VRAM optimizasyonu (Half Precision)
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
             self.model = AudioGenForConditionalGeneration.from_pretrained(
                 settings.MODEL_ID, 
                 torch_dtype=torch.float16 if settings.DEVICE == "cuda" else torch.float32
             ).to(settings.DEVICE)
+            
+            # [ARCH-COMPLIANCE] VRAM israfını önlemek için eval modu
+            self.model.eval()
             logger.info("AudioGen Ready.", event_id="MODEL_READY")
         except Exception as e:
             logger.error(f"Load Fail: {e}", event_id="MODEL_INIT_FAIL")
 
     async def generate_async(self, prompt: str, duration: int, job_id: str, trace_id: str, tenant_id: str):
-        logger.info(f"Generating SFX for: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
+        logger.info(f"Generating SFX: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
         path = f"/tmp/{job_id}.wav"
         
         def render():
+            # [ARCH-COMPLIANCE] Bloklamayan çıkarım
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # 50 token/sec (Max 10sn)
+            # AudioGen: ~50 token = 1 saniye
             tokens = min(duration * 50, 500) 
-            audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
-            sampling_rate = self.model.config.audio_encoder.sampling_rate
             
+            with torch.inference_mode():
+                audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
+            
+            sampling_rate = self.model.config.audio_encoder.sampling_rate
             audio_data = audio_values[0, 0].cpu().numpy()
             scipy.io.wavfile.write(path, rate=sampling_rate, data=audio_data)
             
         try:
             await asyncio.to_thread(render)
+            
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
             if os.path.exists(path): os.remove(path)
             
             s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
             logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
+            
             await self._publish_event("media.generation.completed", trace_id, job_id, tenant_id, True, s3_uri)
                 
         except Exception as e:
@@ -70,7 +83,8 @@ class AudioGenEngine:
             if os.path.exists(path): os.remove(path)
             await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
         finally:
-            if settings.DEVICE == "cuda": torch.cuda.empty_cache()
+            if settings.DEVICE == "cuda": 
+                torch.cuda.empty_cache()
 
     async def _publish_event(self, event_type, trace_id, job_id, tenant_id, success, uri, err=""):
         try:
@@ -83,8 +97,11 @@ class AudioGenEngine:
                     event_type=event_type, trace_id=trace_id, job_id=job_id, tenant_id=tenant_id, 
                     media_type="sfx", success=success, result_uri=uri, error_message=err, timestamp=ts
                 )
-                await ex.publish(aio_pika.Message(body=evt.SerializeToString()), routing_key=event_type)
+                await ex.publish(
+                    aio_pika.Message(body=evt.SerializeToString(), content_type="application/protobuf"), 
+                    routing_key=event_type
+                )
         except Exception as e:
-            logger.error(f"RMQ Fail: {e}")
+            logger.error(f"RMQ Publish Fail: {e}")
 
 audiogen_engine = AudioGenEngine()

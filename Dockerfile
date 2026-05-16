@@ -19,12 +19,13 @@ RUN uv venv $VIRTUAL_ENV --python /usr/bin/python3.10
 
 COPY requirements.txt .
 
-# OmniVoice Stratejisi: Önce ML paketleri
+# 1. AŞAMA: Core ML Altyapısı
 RUN uv pip install --no-cache \
     torch==2.5.1 \
     torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu124
 
+# 2. AŞAMA: Diğer tüm bağımlılıklar (sıralı kurulum garanti edilir)
 RUN uv pip install --no-cache -r requirements.txt
 
 COPY . .
@@ -36,6 +37,7 @@ RUN mkdir -p /app/model-cache && \
 
 USER appuser
 ENV HF_HOME="/app/model-cache"
+ENV HF_HUB_DISABLE_PROGRESS_BARS=1
 
 EXPOSE 16320 16321
 
