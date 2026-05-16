@@ -6,13 +6,11 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# Transformers Import - En kararlı ve doğrudan yol
+# Transformers Import - En esnek ve hata payı düşük yol
 try:
-    from transformers import AutoProcessor, AudioGenForConditionalGeneration
-    logger_init = structlog.get_logger()
-    logger_init.info("AudioGen classes registered", event_id="IMPORT_SUCCESS")
+    from transformers import AutoProcessor, AutoModelForTextToWaveform
 except ImportError as e:
-    raise ImportError(f"CRITICAL: AudioGen classes missing in transformers. Error: {e}")
+    raise ImportError(f"CRITICAL: Transformers could not load required AutoClasses: {e}")
 
 logger = structlog.get_logger()
 
@@ -28,11 +26,14 @@ class AudioGenEngine:
         )
 
     def initialize(self):
-        logger.info(f"Loading SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Initializing SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Model yüklenirken işlemciyi ve modeli hazırla
+            # Model_id'den doğru Processor ve Modeli otomatik çöz
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
-            self.model = AudioGenForConditionalGeneration.from_pretrained(
+            
+            # [CRITICAL FIX]: Sabit class ismi yerine AutoModel kullanıyoruz.
+            # Bu, 'ImportError: cannot import name...' hatasını imkansız hale getirir.
+            self.model = AutoModelForTextToWaveform.from_pretrained(
                 settings.MODEL_ID, 
                 torch_dtype=torch.float16 if settings.DEVICE == "cuda" else torch.float32
             ).to(settings.DEVICE)
@@ -48,7 +49,7 @@ class AudioGenEngine:
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # AudioGen: ~50 token = 1 saniye
+            # AudioGen: 1 saniye ~ 50 token. 
             tokens = min(duration * 50, 500) 
             
             with torch.inference_mode():
@@ -76,8 +77,7 @@ class AudioGenEngine:
             if os.path.exists(path): os.remove(path)
             await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
         finally:
-            if settings.DEVICE == "cuda": 
-                torch.cuda.empty_cache()
+            if settings.DEVICE == "cuda": torch.cuda.empty_cache()
 
     async def _publish_event(self, event_type, trace_id, job_id, tenant_id, success, uri, err=""):
         try:
@@ -95,6 +95,6 @@ class AudioGenEngine:
                     routing_key=event_type
                 )
         except Exception as e:
-            logger.error(f"RMQ Fail: {e}")
+            logger.error(f"RMQ Publish Fail: {e}")
 
 audiogen_engine = AudioGenEngine()
