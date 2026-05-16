@@ -1,23 +1,20 @@
-# 1. Önce Kritik Yan Bağımlılıklar (Zorunlu)
-sentencepiece
-encodec
-librosa
-soundfile
-einops>=0.7.0
-
-# 2. Sentiric ML Stack (OmniVoice Alignment)
+# Sentiric Core
 torch==2.5.1
 torchaudio==2.5.1
-# AudioGen desteği v4.45.0 ile stabilize oldu
-transformers[audio]==4.45.2
+# Meta'nın resmi AudioGen kütüphanesi
+audiocraft
+# Transformers'ı stabil sürüme çekiyoruz (diğer yan işler için)
+transformers==4.45.2
 accelerate>=0.29.0
+sentencepiece
+einops>=0.7.0
 
-# 3. Sentiric Protobuf/gRPC Standardı (Strict Compliance)
+# Sentiric Protobuf Standardı (Contracts uyumu için zorunlu)
 protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
 
-# 4. Web & Infra
+# Web & Infrastructure
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0
