@@ -1,10 +1,21 @@
 # [ARCH-COMPLIANCE] SOP-01: Eksiksiz Teslimat
 import torch, uuid, os, boto3, asyncio, structlog, aio_pika, scipy.io.wavfile
-from transformers import AutoProcessor, AudioGenForConditionalGeneration
+import numpy as np
 from botocore.config import Config
 from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
+
+# Transformers importlarını korumalı yapıyoruz
+try:
+    from transformers import AutoProcessor, AudioGenForConditionalGeneration
+except ImportError as e:
+    # Eğer global import başarısız olursa, alt modülden zorla çekmeyi dene
+    try:
+        from transformers.models.audiogen.modeling_audiogen import AudioGenForConditionalGeneration
+        from transformers.models.audiogen.processing_audiogen import AutoProcessor
+    except:
+        raise ImportError(f"AudioGen requirements missing (encodec, sentencepiece, etc.): {e}")
 
 logger = structlog.get_logger()
 
@@ -39,7 +50,10 @@ class AudioGenEngine:
             tokens = min(duration * 50, 500) 
             audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             sampling_rate = self.model.config.audio_encoder.sampling_rate
-            scipy.io.wavfile.write(path, rate=sampling_rate, data=audio_values[0, 0].cpu().numpy())
+            
+            # CPU'ya çek ve numpy'a çevir
+            audio_data = audio_values[0, 0].cpu().numpy()
+            scipy.io.wavfile.write(path, rate=sampling_rate, data=audio_data)
             
         def clear_vram():
             if settings.DEVICE == "cuda": 
@@ -52,7 +66,7 @@ class AudioGenEngine:
             # 2. Upload S3
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
-            os.remove(path)
+            if os.path.exists(path): os.remove(path)
             
             s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
             logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
@@ -68,10 +82,9 @@ class AudioGenEngine:
         except Exception as e:
             err_msg = str(e)
             logger.error(f"SFX Render failed: {err_msg}", event_id="SFX_GEN_FAIL", trace_id=trace_id)
-            if os.path.exists(path):
-                os.remove(path)
+            if os.path.exists(path): os.remove(path)
                 
-            # [ARCH-COMPLIANCE FIX] 4. Publish Failed Event
+            # Publish Failed Event
             await self._publish_event(
                 routing_key="media.generation.failed",
                 event_type="media.generation.failed",
@@ -79,7 +92,6 @@ class AudioGenEngine:
                 success=False, result_uri="", error_message=err_msg
             )
         finally:
-            # VRAM Temizliği thread bloklamasın
             await asyncio.to_thread(clear_vram)
 
     async def _publish_event(self, routing_key: str, event_type: str, trace_id: str, job_id: str, tenant_id: str, success: bool, result_uri: str, error_message: str):
