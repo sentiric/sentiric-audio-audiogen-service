@@ -1,0 +1,112 @@
+# =============================================================
+# LOCAL DEV: SENTIRIC AUDIO-AUDIOGEN SERVICE
+# Bu dosya sadece bu servisi izole geliştirmek/test etmek içindir.
+# Production için sentiric-infrastructure reposunu kullanın.
+# =============================================================
+name: audiogen-local-dev
+
+networks:
+  local-net:
+    driver: bridge
+
+volumes:
+  local_rabbitmq_data:
+  local_minio_data:
+
+services:
+  # 1. BAĞIMLILIK: RABBITMQ (Olay Veriyolu)
+  rabbitmq:
+    image: ghcr.io/sentiric/sentiric-rabbitmq:latest
+    container_name: local-rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=sentiric
+      - RABBITMQ_DEFAULT_PASS=sentiric_pass
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - local-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. BAĞIMLILIK: MINIO (Medya Deposu)
+  minio:
+    image: ghcr.io/sentiric/sentiric-minio:latest
+    container_name: local-minio
+    environment:
+      - MINIO_ROOT_USER=sentiric
+      - MINIO_ROOT_PASSWORD=sentiric-secret-key
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    networks:
+      - local-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc
+    container_name: local-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - local-net
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 sentiric sentiric-secret-key;
+      mc mb myminio/sentiric --ignore-existing;
+      mc anonymous set download myminio/sentiric;
+      echo '✅ Local MinIO Bucket (sentiric) is ready.';
+      "
+
+  # 3. ANA SERVİS: AUDIO-AUDIOGEN
+  audio-audiogen-service:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: local-audiogen-service
+    environment:
+      - ENV=development
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=json
+      - TENANT_ID=local_test
+      # mTLS Ayarları
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - AUDIOGEN_SERVICE_CERT_PATH=/sentiric-certificates/certs/audio-audiogen-service-chain.crt
+      - AUDIOGEN_SERVICE_KEY_PATH=/sentiric-certificates/certs/audio-audiogen-service.key
+      # Dış Bağımlılık Bağlantıları
+      - BUCKET_ENDPOINT_URL=http://minio:9000
+      - BUCKET_ACCESS_KEY_ID=sentiric
+      - BUCKET_SECRET_ACCESS_KEY=sentiric-secret-key
+      - BUCKET_NAME=sentiric
+      - RABBITMQ_URL=amqp://sentiric:sentiric_pass@rabbitmq:5672/%2f
+    volumes:
+      - "../sentiric-certificates:/sentiric-certificates:ro"
+      - "./model-cache:/app/model-cache" # Modelleri local'e indirsin, her seferinde silinmesin
+    ports:
+      - "16320:16320" # HTTP (Health/Metrics)
+      - "16321:16321" # gRPC
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - local-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
