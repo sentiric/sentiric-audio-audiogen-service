@@ -1,5 +1,4 @@
-# OmniVoice ile tam uyumlu base image
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -20,17 +19,16 @@ RUN uv venv $VIRTUAL_ENV --python /usr/bin/python3.10
 
 COPY requirements.txt .
 
-# OmniVoice'un başarısını sağlayan Torch 2.8.0 kurulumu
+# KARARLI DEPO: cu124 kullanarak indirme hatalarını eliyoruz
 RUN uv pip install --no-cache \
-    torch==2.8.0 \
-    torchaudio==2.8.0 \
-    --index-url https://download.pytorch.org/whl/cu128
+    torch==2.5.1 \
+    torchaudio==2.5.1 \
+    --index-url https://download.pytorch.org/whl/cu124
 
 RUN uv pip install --no-cache -r requirements.txt
 
 COPY . .
 
-# Klasör ve İzin Yapılandırması
 RUN mkdir -p /app/model-cache && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --no-create-home --uid 1001 --ingroup appgroup appuser && \
@@ -39,6 +37,7 @@ RUN mkdir -p /app/model-cache && \
 
 USER appuser
 ENV HF_HOME="/app/model-cache"
+ENV TRANSFORMERS_CACHE="/app/model-cache"
 ENV HF_HUB_DISABLE_PROGRESS_BARS=1
 
 EXPOSE 16320 16321

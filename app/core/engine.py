@@ -6,11 +6,12 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# Transformers Import - En esnek ve hata payı düşük yol
+# Transformers Import - En kararlı yol
 try:
-    from transformers import AutoProcessor, AutoModelForTextToWaveform
+    # AudioGen resmi sınıfları transformers >= 4.44.0'da mevcuttur
+    from transformers import AutoProcessor, AudioGenForConditionalGeneration
 except ImportError as e:
-    raise ImportError(f"CRITICAL: Transformers could not load required AutoClasses: {e}")
+    raise ImportError(f"CRITICAL: AudioGen classes not found. Verify transformers[audio] installation. Error: {e}")
 
 logger = structlog.get_logger()
 
@@ -26,18 +27,14 @@ class AudioGenEngine:
         )
 
     def initialize(self):
-        logger.info(f"Initializing SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Loading AudioGen Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Model_id'den doğru Processor ve Modeli otomatik çöz
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
-            
-            # [CRITICAL FIX]: Sabit class ismi yerine AutoModel kullanıyoruz.
-            # Bu, 'ImportError: cannot import name...' hatasını imkansız hale getirir.
-            self.model = AutoModelForTextToWaveform.from_pretrained(
+            # VRAM dostu yükleme
+            self.model = AudioGenForConditionalGeneration.from_pretrained(
                 settings.MODEL_ID, 
                 torch_dtype=torch.float16 if settings.DEVICE == "cuda" else torch.float32
             ).to(settings.DEVICE)
-            
             self.model.eval()
             logger.info("AudioGen Ready.", event_id="MODEL_READY")
         except Exception as e:
@@ -49,9 +46,7 @@ class AudioGenEngine:
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # AudioGen: 1 saniye ~ 50 token. 
             tokens = min(duration * 50, 500) 
-            
             with torch.inference_mode():
                 audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             
@@ -61,14 +56,12 @@ class AudioGenEngine:
             
         try:
             await asyncio.to_thread(render)
-            
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
             if os.path.exists(path): os.remove(path)
             
             s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
             logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
-            
             await self._publish_event("media.generation.completed", trace_id, job_id, tenant_id, True, s3_uri)
                 
         except Exception as e:
@@ -77,7 +70,8 @@ class AudioGenEngine:
             if os.path.exists(path): os.remove(path)
             await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
         finally:
-            if settings.DEVICE == "cuda": torch.cuda.empty_cache()
+            if settings.DEVICE == "cuda": 
+                torch.cuda.empty_cache()
 
     async def _publish_event(self, event_type, trace_id, job_id, tenant_id, success, uri, err=""):
         try:
@@ -90,11 +84,8 @@ class AudioGenEngine:
                     event_type=event_type, trace_id=trace_id, job_id=job_id, tenant_id=tenant_id, 
                     media_type="sfx", success=success, result_uri=uri, error_message=err, timestamp=ts
                 )
-                await ex.publish(
-                    aio_pika.Message(body=evt.SerializeToString(), content_type="application/protobuf"), 
-                    routing_key=event_type
-                )
+                await ex.publish(aio_pika.Message(body=evt.SerializeToString()), routing_key=event_type)
         except Exception as e:
-            logger.error(f"RMQ Publish Fail: {e}")
+            logger.error(f"RMQ Fail: {e}")
 
 audiogen_engine = AudioGenEngine()
