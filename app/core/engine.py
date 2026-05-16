@@ -6,14 +6,18 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# Transformers Import - Kaynaktan kurulum sonrası bu yol geçerli olacak
+# [CRITICAL FIX]: Hugging Face Lazy-Loading mekanizmasını Bypass ediyoruz.
+# Sınıfları fiziksel olarak bulundukları alt modüllerden zorla (Absolute Import) çekiyoruz.
 try:
-    from transformers import AutoProcessor, AudioGenForConditionalGeneration
-except ImportError as e:
-    raise ImportError(
-        f"CRITICAL: AudioGen classes not found. Ensure 'transformers' is installed from source. "
-        f"Error: {e}"
-    )
+    # Modelleme Sınıfı
+    from transformers.models.audio_gen.modeling_audio_gen import AudioGenForConditionalGeneration
+    # İşlemci Sınıfı (AudioGenProcessor olarak adlandırılır)
+    from transformers.models.audio_gen.processing_audio_gen import AudioGenProcessor as AutoProcessor
+    logger_init = structlog.get_logger()
+    logger_init.info("AudioGen classes loaded via Absolute Path", event_id="IMPORT_SUCCESS")
+except Exception as e:
+    # Eğer bu da fail ederse, gerçek hata mesajını (eksik paket adını) göreceğiz.
+    raise ImportError(f"FATAL: Could not force-load AudioGen classes. Check dependencies (encodec, librosa, etc.). Error: {e}")
 
 logger = structlog.get_logger()
 
@@ -21,18 +25,12 @@ class AudioGenEngine:
     def __init__(self):
         self.processor = None
         self.model = None
-        self.s3 = boto3.client(
-            's3', 
-            endpoint_url=settings.S3_ENDPOINT, 
-            aws_access_key_id=settings.S3_ACCESS_KEY, 
-            aws_secret_access_key=settings.S3_SECRET_KEY, 
-            config=Config(signature_version='s3v4')
-        )
+        self.s3 = boto3.client('s3', endpoint_url=settings.S3_ENDPOINT, aws_access_key_id=settings.S3_ACCESS_KEY, aws_secret_access_key=settings.S3_SECRET_KEY, config=Config(signature_version='s3v4'))
 
     def initialize(self):
-        logger.info(f"Loading {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Loading AudioGen: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Model yüklenirken VRAM/dtype optimizasyonu
+            # Model yüklenirken VRAM optimizasyonu
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
             self.model = AudioGenForConditionalGeneration.from_pretrained(
                 settings.MODEL_ID, 
@@ -48,12 +46,11 @@ class AudioGenEngine:
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # AudioGen tokens (approx 50 per sec)
+            # 50 token/sec (Max 10sn)
             tokens = min(duration * 50, 500) 
             audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             sampling_rate = self.model.config.audio_encoder.sampling_rate
             
-            # Veriyi NumPy formatına çek
             audio_data = audio_values[0, 0].cpu().numpy()
             scipy.io.wavfile.write(path, rate=sampling_rate, data=audio_data)
             
@@ -65,7 +62,6 @@ class AudioGenEngine:
             
             s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
             logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
-            
             await self._publish_event("media.generation.completed", trace_id, job_id, tenant_id, True, s3_uri)
                 
         except Exception as e:
@@ -74,8 +70,7 @@ class AudioGenEngine:
             if os.path.exists(path): os.remove(path)
             await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
         finally:
-            if settings.DEVICE == "cuda": 
-                torch.cuda.empty_cache()
+            if settings.DEVICE == "cuda": torch.cuda.empty_cache()
 
     async def _publish_event(self, event_type, trace_id, job_id, tenant_id, success, uri, err=""):
         try:
