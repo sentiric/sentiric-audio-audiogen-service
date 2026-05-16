@@ -6,16 +6,19 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# [FINAL BOSS FIX]: Hugging Face Lazy-Loading'i BYPASS et. 
-# Sınıfları doğrudan fiziksel adreslerinden import et.
+# [FINAL BOSS FIX]: Hugging Face Lazy-Loading mekanizmasını BYPASS ediyoruz.
+# Sınıfları fiziksel olarak bulundukları alt modüllerden zorla çekiyoruz.
 try:
+    # 1. Hugging Face içindeki AudioGen model sınıfı (Underscore'lu yol)
     from transformers.models.audio_gen.modeling_audio_gen import AudioGenForConditionalGeneration
+    # 2. İşlemci sınıfı
     from transformers.models.audio_gen.processing_audio_gen import AudioGenProcessor as AutoProcessor
+    
     logger_init = structlog.get_logger()
-    logger_init.info("AudioGen force-loaded via absolute path", event_id="IMPORT_SUCCESS")
+    logger_init.info("AudioGen classes force-loaded via absolute path", event_id="IMPORT_SUCCESS")
 except Exception as e:
-    # Bu hata gelirse sistemde transformers main dalı yüklü değildir
-    raise ImportError(f"CRITICAL: AudioGen source files not found. Check requirements.txt. Error: {e}")
+    # Bu aşamada hata gelirse requirements.txt'de transformersMain veya encodec eksiktir.
+    raise ImportError(f"FATAL: AudioGen internal paths changed or dependencies missing: {e}")
 
 logger = structlog.get_logger()
 
@@ -33,7 +36,7 @@ class AudioGenEngine:
     def initialize(self):
         logger.info(f"Initializing SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Sınıflar artık yukarıda zorla yüklendi, doğrudan kullanabiliriz
+            # Model yüklenirken VRAM optimizasyonu
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
             self.model = AudioGenForConditionalGeneration.from_pretrained(
                 settings.MODEL_ID, 
@@ -41,17 +44,19 @@ class AudioGenEngine:
             ).to(settings.DEVICE)
             
             self.model.eval()
-            logger.info("AudioGen Ready.", event_id="MODEL_READY")
+            logger.info("AudioGen Ready (Force-Loaded).", event_id="MODEL_READY")
         except Exception as e:
             logger.error(f"Load Fail: {e}", event_id="MODEL_INIT_FAIL")
 
     async def generate_async(self, prompt: str, duration: int, job_id: str, trace_id: str, tenant_id: str):
-        logger.info(f"Generating SFX: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
+        logger.info(f"Generating SFX for: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
         path = f"/tmp/{job_id}.wav"
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
+            # AudioGen: ~50 token = 1 saniye (Max 10sn sınırı)
             tokens = min(duration * 50, 500) 
+            
             with torch.inference_mode():
                 audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             
@@ -61,6 +66,7 @@ class AudioGenEngine:
             
         try:
             await asyncio.to_thread(render)
+            
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
             if os.path.exists(path): os.remove(path)
@@ -72,10 +78,10 @@ class AudioGenEngine:
         except Exception as e:
             err_msg = str(e)
             logger.error(f"SFX Render failed: {err_msg}", event_id="SFX_GEN_FAIL", trace_id=trace_id)
+            if os.path.exists(path): os.remove(path)
             await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
         finally:
-            if settings.DEVICE == "cuda": 
-                torch.cuda.empty_cache()
+            if settings.DEVICE == "cuda": torch.cuda.empty_cache()
 
     async def _publish_event(self, event_type, trace_id, job_id, tenant_id, success, uri, err=""):
         try:
@@ -88,8 +94,11 @@ class AudioGenEngine:
                     event_type=event_type, trace_id=trace_id, job_id=job_id, tenant_id=tenant_id, 
                     media_type="sfx", success=success, result_uri=uri, error_message=err, timestamp=ts
                 )
-                await ex.publish(aio_pika.Message(body=evt.SerializeToString()), routing_key=event_type)
+                await ex.publish(
+                    aio_pika.Message(body=evt.SerializeToString(), content_type="application/protobuf"), 
+                    routing_key=event_type
+                )
         except Exception as e:
-            logger.error(f"RMQ Fail: {e}")
+            logger.error(f"RMQ Publish Fail: {e}")
 
 audiogen_engine = AudioGenEngine()
