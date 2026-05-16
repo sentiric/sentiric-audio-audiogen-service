@@ -6,13 +6,13 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# Transformers Import - Dinamik ve Güvenli Yol
+# Transformers Import - En kararlı ve doğrudan yol
 try:
-    from transformers import AutoProcessor, AutoModelForAudioSeq2Seq
-    # Not: HF AudioGen'i bazen AudioSeq2Seq bazen ConditionalGeneration olarak kaydeder.
-    # initialize içinde model_id'den class'ı otomatik çözeceğiz.
+    from transformers import AutoProcessor, AudioGenForConditionalGeneration
+    logger_init = structlog.get_logger()
+    logger_init.info("AudioGen classes registered", event_id="IMPORT_SUCCESS")
 except ImportError as e:
-    raise ImportError(f"CRITICAL: Transformers base load fail: {e}")
+    raise ImportError(f"CRITICAL: AudioGen classes missing in transformers. Error: {e}")
 
 logger = structlog.get_logger()
 
@@ -28,15 +28,11 @@ class AudioGenEngine:
         )
 
     def initialize(self):
-        logger.info(f"Initializing SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Loading SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Model yüklenirken işlemciyi otomatik çöz
+            # Model yüklenirken işlemciyi ve modeli hazırla
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
-            
-            # [CRITICAL FIX]: AudioGenForConditionalGeneration yerine AutoModel kullanıyoruz.
-            # Hugging Face, model_id'ye bakarak doğru sınıfı (AudioGen) kendisi bulacaktır.
-            from transformers import AutoModelForTextToWaveform
-            self.model = AutoModelForTextToWaveform.from_pretrained(
+            self.model = AudioGenForConditionalGeneration.from_pretrained(
                 settings.MODEL_ID, 
                 torch_dtype=torch.float16 if settings.DEVICE == "cuda" else torch.float32
             ).to(settings.DEVICE)
@@ -51,13 +47,11 @@ class AudioGenEngine:
         path = f"/tmp/{job_id}.wav"
         
         def render():
-            # [ARCH-COMPLIANCE] Bloklamayan çıkarım
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # Max duration 10sn (500 token)
+            # AudioGen: ~50 token = 1 saniye
             tokens = min(duration * 50, 500) 
             
             with torch.inference_mode():
-                # AudioGen spesifik generate parametreleri
                 audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             
             sampling_rate = self.model.config.audio_encoder.sampling_rate
@@ -73,6 +67,7 @@ class AudioGenEngine:
             
             s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
             logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
+            
             await self._publish_event("media.generation.completed", trace_id, job_id, tenant_id, True, s3_uri)
                 
         except Exception as e:
@@ -95,7 +90,10 @@ class AudioGenEngine:
                     event_type=event_type, trace_id=trace_id, job_id=job_id, tenant_id=tenant_id, 
                     media_type="sfx", success=success, result_uri=uri, error_message=err, timestamp=ts
                 )
-                await ex.publish(aio_pika.Message(body=evt.SerializeToString()), routing_key=event_type)
+                await ex.publish(
+                    aio_pika.Message(body=evt.SerializeToString(), content_type="application/protobuf"), 
+                    routing_key=event_type
+                )
         except Exception as e:
             logger.error(f"RMQ Fail: {e}")
 

@@ -1,20 +1,21 @@
-# 1. Core ML (Order is critical for UV)
-torch==2.5.1
-torchaudio==2.5.1
-# 2. AudioGen Specifics (Must be installed BEFORE transformers checks them)
+# 1. Ses ve Model Altyapısı
 sentencepiece
 encodec
 librosa
 soundfile
-einops>=0.7.0
-# 3. Transformers (The Engine)
-transformers==4.44.2
+# Hugging Face Audio Stack
+transformers[audio]==4.46.3
 accelerate>=0.29.0
-# 4. Sentiric Stack (Compliance)
+einops>=0.7.0
+
+# 2. Sentiric Core (Compliance)
+torch==2.5.1
+torchaudio==2.5.1
 protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
-# 5. Web & Infra
+
+# 3. Web & Infra
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0
