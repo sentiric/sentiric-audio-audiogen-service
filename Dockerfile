@@ -19,16 +19,18 @@ RUN uv venv $VIRTUAL_ENV --python /usr/bin/python3.10
 
 COPY requirements.txt .
 
+# Önce ML paketleri (Cache dostu)
 RUN uv pip install --no-cache \
     torch==2.5.1 \
     torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu124
 
+# Geri kalanı
 RUN uv pip install --no-cache -r requirements.txt
 
 COPY . .
 
-# Klasörleri oluştur ve izinleri ver
+# Klasör yapılandırması ve yetkiler
 RUN mkdir -p /app/model-cache && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --no-create-home --uid 1001 --ingroup appgroup appuser && \
@@ -37,7 +39,6 @@ RUN mkdir -p /app/model-cache && \
 
 USER appuser
 ENV HF_HOME="/app/model-cache"
-ENV TRANSFORMERS_CACHE="/app/model-cache"
 
 EXPOSE 16320 16321
 

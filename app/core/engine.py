@@ -6,17 +6,27 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# [CRITICAL] Meta Audiocraft Import
+# Hugging Face AudioGen sınıflarını ZORLA yükle (Absolute Import)
 try:
-    from audiocraft.models import AudioGen
-    from audiocraft.data.audio import audio_write
-except ImportError as e:
-    raise ImportError(f"FATAL: audiocraft not found. Error: {e}")
+    # transformers v4.44+ içinde AudioGen bu yoldadır
+    from transformers import AutoProcessor, AudioGenForConditionalGeneration
+    logger_init = structlog.get_logger()
+    logger_init.info("AudioGen classes loaded via standard path", event_id="IMPORT_SUCCESS")
+except ImportError:
+    try:
+        # Alternatif iç yol (Bypass)
+        from transformers.models.audio_gen.modeling_audio_gen import AudioGenForConditionalGeneration
+        from transformers.models.audio_gen.processing_audio_gen import AudioGenProcessor as AutoProcessor
+        logger_init = structlog.get_logger()
+        logger_init.info("AudioGen classes force-loaded via internal path", event_id="IMPORT_FORCE_SUCCESS")
+    except Exception as e:
+        raise ImportError(f"FATAL: AudioGen classes not found. Check dependencies: {e}")
 
 logger = structlog.get_logger()
 
 class AudioGenEngine:
     def __init__(self):
+        self.processor = None
         self.model = None
         self.s3 = boto3.client('s3', 
             endpoint_url=settings.S3_ENDPOINT, 
@@ -26,43 +36,39 @@ class AudioGenEngine:
         )
 
     def initialize(self):
-        logger.info(f"Loading AudioGen: {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Loading SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Meta Audiocraft yöntemiyle model yükleme
-            self.model = AudioGen.get_pretrained(settings.MODEL_ID, device=settings.DEVICE)
-            logger.info("AudioGen Ready (via Audiocraft).", event_id="MODEL_READY")
+            self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
+            self.model = AudioGenForConditionalGeneration.from_pretrained(
+                settings.MODEL_ID, 
+                torch_dtype=torch.float16 if settings.DEVICE == "cuda" else torch.float32
+            ).to(settings.DEVICE)
+            self.model.eval()
+            logger.info("AudioGen Ready.", event_id="MODEL_READY")
         except Exception as e:
             logger.error(f"Load Fail: {e}", event_id="MODEL_INIT_FAIL")
 
     async def generate_async(self, prompt: str, duration: int, job_id: str, trace_id: str, tenant_id: str):
         logger.info(f"Generating SFX: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
-        path = f"/tmp/{job_id}" # audiocraft kendi .wav ekler
+        path = f"/tmp/{job_id}.wav"
         
         def render():
-            # Parametreleri set et
-            self.model.set_generation_params(duration=min(duration, 10))
+            inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
+            # Max duration 10sn sınırı (VRAM güvenliği)
+            tokens = min(duration * 50, 500) 
             
             with torch.inference_mode():
-                # Üretim (list of prompts döner)
-                wav = self.model.generate([prompt])
+                audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             
-            # audiocraft'ın kendi save metodu (loudness normalizasyonu ile)
-            audio_write(
-                path, 
-                wav[0].cpu(), 
-                self.model.sample_rate, 
-                strategy="loudness", 
-                loudness_compressor=True
-            )
+            sampling_rate = self.model.config.audio_encoder.sampling_rate
+            audio_data = audio_values[0, 0].cpu().numpy()
+            scipy.io.wavfile.write(path, rate=sampling_rate, data=audio_data)
             
         try:
             await asyncio.to_thread(render)
-            
-            final_wav_path = f"{path}.wav"
             object_name = f"sfx/{job_id}.wav"
-            
-            await asyncio.to_thread(self.s3.upload_file, final_wav_path, settings.S3_BUCKET, object_name)
-            if os.path.exists(final_wav_path): os.remove(final_wav_path)
+            await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
+            if os.path.exists(path): os.remove(path)
             
             s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
             logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
