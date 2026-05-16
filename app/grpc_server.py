@@ -1,3 +1,4 @@
+# [ARCH-COMPLIANCE] SOP-01: Eksiksiz Teslimat
 import grpc, asyncio, uuid, structlog
 from concurrent import futures
 from sentiric.audio_gen.v1 import gateway_pb2, gateway_pb2_grpc
@@ -9,14 +10,24 @@ logger = structlog.get_logger()
 class AudioGatewayServicer(gateway_pb2_grpc.AudioGatewayServiceServicer):
     async def SubmitAudioJob(self, request, context):
         metadata = dict(context.invocation_metadata())
-        trace_id = metadata.get("x-trace-id", "unknown")
-        tenant_id = metadata.get("x-tenant-id", "unknown")
+        
+        # [ARCH-COMPLIANCE FIX] Önce Protobuf payload'a bak, yoksa Metadata'dan (SUTS/Tracing) al.
+        trace_id = getattr(request, "trace_id", "") or metadata.get("x-trace-id", "unknown")
+        tenant_id = getattr(request, "tenant_id", "") or metadata.get("x-tenant-id", "unknown")
         job_id = str(uuid.uuid4())
 
-        logger.info("AudioGen Job Accepted.", event_id="GRPC_JOB_ACCEPTED", trace_id=trace_id)
+        logger.info(f"AudioGen Job Accepted: {request.prompt}", event_id="GRPC_JOB_ACCEPTED", trace_id=trace_id)
         
-        # Arka planda üretimi başlat (CQRS)
-        asyncio.create_task(audiogen_engine.generate_async(request.prompt, request.duration_seconds, job_id, trace_id, tenant_id))
+        # Arka planda üretimi başlat (CQRS: Hemen Job_ID dön, işi arkada yap)
+        asyncio.create_task(
+            audiogen_engine.generate_async(
+                prompt=request.prompt, 
+                duration=request.duration_seconds, 
+                job_id=job_id, 
+                trace_id=trace_id, 
+                tenant_id=tenant_id
+            )
+        )
 
         return gateway_pb2.SubmitAudioJobResponse(accepted=True, job_id=job_id)
 
@@ -35,5 +46,6 @@ async def serve_grpc():
     except Exception as e:
         logger.error(f"mTLS Fail: {e}", event_id="MTLS_FAIL")
         raise e
+        
     await server.start()
     await server.wait_for_termination()
