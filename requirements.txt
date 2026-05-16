@@ -1,11 +1,13 @@
-torch==2.8.0
-torchaudio
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
 transformers>=4.44.0
 accelerate>=0.29.0
+sentencepiece
+protobuf>=3.20.0
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0
-protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
 structlog==24.4.0
