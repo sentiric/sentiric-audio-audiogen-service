@@ -1,4 +1,4 @@
-# 1. Ses ve Model Altyapısı (Önce bunlar kurulmalı)
+# 1. Altyapı
 sentencepiece
 encodec
 librosa
@@ -6,14 +6,14 @@ soundfile
 scipy
 einops>=0.7.0
 
-# 2. Sentiric ML Stack (OmniVoice ile %100 Aynı)
+# 2. ML Stack
 torch==2.5.1
 torchaudio==2.5.1
-# AudioGen'in en kararlı olduğu versiyon
+# Audio eklentisiyle birlikte
 transformers[audio]==4.46.3
 accelerate>=0.29.0
 
-# 3. Sentiric Protobuf/gRPC Standardı (Strict Compliance)
+# 3. Sentiric Compliance
 protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
