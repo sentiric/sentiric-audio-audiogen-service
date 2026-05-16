@@ -6,21 +6,33 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# [FINAL BOSS FIX]: Hugging Face Lazy-Loading mekanizmasını BYPASS ediyoruz.
-# Sınıfları fiziksel olarak bulundukları alt modüllerden zorla çekiyoruz.
+# --- [CRITICAL] DYNAMIC DISCOVERY LOGIC ---
+AudioGenForConditionalGeneration = None
+AutoProcessor = None
+
 try:
-    # 1. Hugging Face içindeki AudioGen model sınıfı (Underscore'lu yol)
-    from transformers.models.audio_gen.modeling_audio_gen import AudioGenForConditionalGeneration
-    # 2. İşlemci sınıfı
-    from transformers.models.audio_gen.processing_audio_gen import AudioGenProcessor as AutoProcessor
-    
-    logger_init = structlog.get_logger()
-    logger_init.info("AudioGen classes force-loaded via absolute path", event_id="IMPORT_SUCCESS")
-except Exception as e:
-    # Bu aşamada hata gelirse requirements.txt'de transformersMain veya encodec eksiktir.
-    raise ImportError(f"FATAL: AudioGen internal paths changed or dependencies missing: {e}")
+    # Deneme 1: Standart Top-Level Import
+    from transformers import AudioGenForConditionalGeneration as AGModel, AutoProcessor as AP
+    AudioGenForConditionalGeneration, AutoProcessor = AGModel, AP
+except ImportError:
+    try:
+        # Deneme 2: v4.45+ Alt Modül Yolu (Underscore)
+        import transformers.models.audio_gen.modeling_audio_gen as m
+        import transformers.models.audio_gen.processing_audio_gen as p
+        AudioGenForConditionalGeneration = m.AudioGenForConditionalGeneration
+        AutoProcessor = p.AudioGenProcessor
+    except ImportError:
+        try:
+            # Deneme 3: Bazı sürümlerdeki alternatif yol
+            from transformers import AudioGenProcessor
+            from transformers.models.audiogen.modeling_audiogen import AudioGenForConditionalGeneration as AGModel
+            AudioGenForConditionalGeneration = AGModel
+            AutoProcessor = AudioGenProcessor
+        except ImportError as e:
+            raise ImportError(f"FATAL: AudioGen classes not found in any known HF path. Dependencies: {e}")
 
 logger = structlog.get_logger()
+logger.info("AudioGen Engine Classes Resolved", event_id="IMPORT_SUCCESS")
 
 class AudioGenEngine:
     def __init__(self):
@@ -34,9 +46,9 @@ class AudioGenEngine:
         )
 
     def initialize(self):
-        logger.info(f"Initializing SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
+        logger.info(f"Loading SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Model yüklenirken VRAM optimizasyonu
+            # Dinamik olarak çözülen sınıfları kullanıyoruz
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
             self.model = AudioGenForConditionalGeneration.from_pretrained(
                 settings.MODEL_ID, 
@@ -44,17 +56,17 @@ class AudioGenEngine:
             ).to(settings.DEVICE)
             
             self.model.eval()
-            logger.info("AudioGen Ready (Force-Loaded).", event_id="MODEL_READY")
+            logger.info("AudioGen Ready.", event_id="MODEL_READY")
         except Exception as e:
             logger.error(f"Load Fail: {e}", event_id="MODEL_INIT_FAIL")
 
     async def generate_async(self, prompt: str, duration: int, job_id: str, trace_id: str, tenant_id: str):
-        logger.info(f"Generating SFX for: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
+        logger.info(f"Generating SFX: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
         path = f"/tmp/{job_id}.wav"
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # AudioGen: ~50 token = 1 saniye (Max 10sn sınırı)
+            # ~50 token = 1 saniye. Max 10 saniye sınırı.
             tokens = min(duration * 50, 500) 
             
             with torch.inference_mode():
@@ -66,7 +78,6 @@ class AudioGenEngine:
             
         try:
             await asyncio.to_thread(render)
-            
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
             if os.path.exists(path): os.remove(path)
@@ -81,7 +92,8 @@ class AudioGenEngine:
             if os.path.exists(path): os.remove(path)
             await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
         finally:
-            if settings.DEVICE == "cuda": torch.cuda.empty_cache()
+            if settings.DEVICE == "cuda": 
+                torch.cuda.empty_cache()
 
     async def _publish_event(self, event_type, trace_id, job_id, tenant_id, success, uri, err=""):
         try:
@@ -94,11 +106,8 @@ class AudioGenEngine:
                     event_type=event_type, trace_id=trace_id, job_id=job_id, tenant_id=tenant_id, 
                     media_type="sfx", success=success, result_uri=uri, error_message=err, timestamp=ts
                 )
-                await ex.publish(
-                    aio_pika.Message(body=evt.SerializeToString(), content_type="application/protobuf"), 
-                    routing_key=event_type
-                )
+                await ex.publish(aio_pika.Message(body=evt.SerializeToString(), content_type="application/protobuf"), routing_key=event_type)
         except Exception as e:
-            logger.error(f"RMQ Publish Fail: {e}")
+            logger.error(f"RMQ Fail: {e}")
 
 audiogen_engine = AudioGenEngine()

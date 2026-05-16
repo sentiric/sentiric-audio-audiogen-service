@@ -1,23 +1,23 @@
-# 1. Ses Motoru Temelleri (Kurulum sırası hayati önem taşır)
-encodec
+# 1. Ses ve Model Temeli (Kritik: Transformers'dan önce kurulmalı)
 sentencepiece
+encodec
 librosa
 soundfile
 einops>=0.7.0
 
-# 2. Sentiric ML Stack (OmniVoice ile tam hizalı)
+# 2. Sentiric ML Stack (OmniVoice ile %100 Hizalı)
 torch==2.5.1
 torchaudio==2.5.1
-# AudioGen için en güvenli liman 4.44.2'dir
-transformers[audio]==4.44.2
+# AudioGen'in en stabil olduğu resmi sürüm
+transformers[audio]==4.45.2
 accelerate>=0.29.0
 
-# 3. Sentiric Protobuf/gRPC Standartları
+# 3. Sentiric Protobuf/gRPC Standardı (Contracts Uyumu)
 protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
 
-# 4. Web & Infra
+# 4. Web & Ops
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0
