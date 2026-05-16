@@ -6,15 +6,15 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# Transformers kontrolü
+# Transformers Import - Kesin çözüm
 try:
     from transformers import AutoProcessor, AudioGenForConditionalGeneration
-    import encodec
-except ImportError as e:
-    raise ImportError(
-        f"CRITICAL: AudioGen dependencies failed to load. "
-        f"Ensure 'encodec' and 'transformers[audio]' are correctly installed. Error: {e}"
-    )
+except ImportError:
+    # Eğer üstten bulunamazsa, explicit path dene
+    try:
+        from transformers.models.audiogen import AudioGenForConditionalGeneration, AutoProcessor
+    except ImportError as e:
+        raise ImportError(f"CRITICAL: AudioGen classes not found in transformers. Error: {e}")
 
 logger = structlog.get_logger()
 
@@ -33,7 +33,6 @@ class AudioGenEngine:
     def initialize(self):
         logger.info(f"Loading {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Model yüklenirken işlemciyi (processor) zorla hazırla
             self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
             self.model = AudioGenForConditionalGeneration.from_pretrained(settings.MODEL_ID).to(settings.DEVICE)
             logger.info("AudioGen Ready.", event_id="MODEL_READY")
@@ -46,22 +45,15 @@ class AudioGenEngine:
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # 1 saniye ses için yaklaşık 50 token. Max 500 token (10sn) sınırı.
             tokens = min(duration * 50, 500) 
             audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             sampling_rate = self.model.config.audio_encoder.sampling_rate
             
-            # Ses verisini CPU'ya al ve numpy formatına çevir
             audio_data = audio_values[0, 0].cpu().numpy()
             scipy.io.wavfile.write(path, rate=sampling_rate, data=audio_data)
             
-        def clear_vram():
-            if settings.DEVICE == "cuda": 
-                torch.cuda.empty_cache()
-            
         try:
             await asyncio.to_thread(render)
-            
             object_name = f"sfx/{job_id}.wav"
             await asyncio.to_thread(self.s3.upload_file, path, settings.S3_BUCKET, object_name)
             if os.path.exists(path): os.remove(path)
@@ -75,12 +67,10 @@ class AudioGenEngine:
                 trace_id=trace_id, job_id=job_id, tenant_id=tenant_id,
                 success=True, result_uri=s3_uri, error_message=""
             )
-                
         except Exception as e:
             err_msg = str(e)
             logger.error(f"SFX Render failed: {err_msg}", event_id="SFX_GEN_FAIL", trace_id=trace_id)
             if os.path.exists(path): os.remove(path)
-            
             await self._publish_event(
                 routing_key="media.generation.failed",
                 event_type="media.generation.failed",
@@ -88,7 +78,8 @@ class AudioGenEngine:
                 success=False, result_uri="", error_message=err_msg
             )
         finally:
-            await asyncio.to_thread(clear_vram)
+            if settings.DEVICE == "cuda":
+                torch.cuda.empty_cache()
 
     async def _publish_event(self, routing_key: str, event_type: str, trace_id: str, job_id: str, tenant_id: str, success: bool, result_uri: str, error_message: str):
         try:
@@ -97,18 +88,12 @@ class AudioGenEngine:
                 ch = await conn.channel()
                 ex = await ch.declare_exchange("sentiric_events", aio_pika.ExchangeType.TOPIC, durable=True)
                 ts = Timestamp(); ts.GetCurrentTime()
-                
                 evt = event_pb2.MediaGenerationCompletedEvent(
                     event_type=event_type, 
                     trace_id=trace_id, job_id=job_id, tenant_id=tenant_id, 
                     media_type="sfx", success=success, result_uri=result_uri, 
-                    error_message=error_message, timestamp=ts
-                )
-                
-                await ex.publish(
-                    aio_pika.Message(body=evt.SerializeToString(), content_type="application/protobuf"), 
-                    routing_key=routing_key
-                )
+                    error_message=error_message, timestamp=ts)
+                await ex.publish(aio_pika.Message(body=evt.SerializeToString(), content_type="application/protobuf"), routing_key=routing_key)
         except Exception as e:
             logger.error(f"Failed to publish event to RMQ: {e}", event_id="RMQ_PUBLISH_FAIL", trace_id=trace_id)
 

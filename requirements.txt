@@ -1,23 +1,27 @@
+# Sentiric Core ML Stack (OmniVoice Alignment)
 torch==2.5.1
-torchvision==0.20.1
 torchaudio==2.5.1
-# Audio eklentisi ile kurmak zorunluluktur
-transformers[audio]>=4.45.0
+# AudioGen için v4.44+ şarttır, v5.x (gelecek) uyumluluğu eklendi
+transformers>=4.44.2
 accelerate>=0.29.0
 sentencepiece
-# Sentiric Protobuf Standardı (Contracts ile uyum için şart)
+einops>=0.7.0
+
+# Sentiric Protobuf Standard (Strict Compliance)
 protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
-# AudioGen Motorunun Kalbi
+sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
+
+# AudioGen Core
 encodec
 librosa
-soundfile
-# Web & Ops
+scipy
+
+# Web & Infrastructure
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic>=2.6.0
-sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.25.0
 structlog==24.4.0
 boto3>=1.34.0
 aio-pika>=9.4.0
-scipy
+python-json-logger>=2.0.7

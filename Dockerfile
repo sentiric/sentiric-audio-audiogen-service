@@ -1,13 +1,13 @@
+# OmniVoice ile aynı base image
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV HF_HUB_DISABLE_PROGRESS_BARS=1
-ENV TOKENIZERS_PARALLELISM=false
 ENV PYTHONUNBUFFERED=1
 
-# Sistem paketleri - build-essential eklendi
+# Sistem paketleri (OmniVoice + AudioGen ihtiyaçları)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 python3-pip python3-venv curl git ffmpeg libsndfile1 build-essential \
+    python3.10 python3-dev python3-pip python3-venv \
+    libsndfile1 curl git ffmpeg build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
@@ -21,14 +21,13 @@ RUN uv venv $VIRTUAL_ENV --python /usr/bin/python3.10
 
 COPY requirements.txt .
 
-# 1. Önce ağır CUDA paketleri (Cache dostu)
+# OmniVoice Stratejisi: Önce ağır ML paketleri
 RUN uv pip install --no-cache \
     torch==2.5.1 \
-    torchvision==0.20.1 \
     torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu124
 
-# 2. Sonra transformers ve diğerleri (Eksik bağımlılıklarla birlikte)
+# Diğerleri
 RUN uv pip install --no-cache -r requirements.txt
 
 COPY . .
@@ -40,6 +39,8 @@ RUN mkdir -p /app/model-cache && \
 
 USER appuser
 ENV HF_HOME="/app/model-cache"
+ENV HF_HUB_DISABLE_PROGRESS_BARS=1
+ENV TOKENIZERS_PARALLELISM=false
 
 EXPOSE 16320 16321
 
