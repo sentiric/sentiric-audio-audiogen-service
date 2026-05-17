@@ -5,9 +5,8 @@ class Settings:
     APP_VERSION = "1.0.0"
     ENV = os.getenv("ENV", "production")
     DEVICE = os.getenv("AUDIO_SERVICE_DEVICE", "cuda")
-    # Meta AudioGen Medium modeli (SFX için en iyisi)
     MODEL_ID = os.getenv("AUDIOGEN_MODEL_ID", "facebook/audiogen-medium")
-    
+
     HTTP_PORT = int(os.getenv("AUDIOGEN_SERVICE_HTTP_PORT", "16320"))
     GRPC_PORT = int(os.getenv("AUDIOGEN_SERVICE_GRPC_PORT", "16321"))
     METRICS_PORT = int(os.getenv("AUDIOGEN_SERVICE_METRICS_PORT", "16322"))

@@ -27,6 +27,9 @@ RUN uv pip install --no-cache \
 
 RUN uv pip install --no-cache -r requirements.txt
 
+# [CRITICAL FIX]: Versiyon uyuşmazlığını aşmak için AudioCraft'ı bağımlılık denetimsiz kuruyoruz!
+RUN uv pip install --no-cache --no-deps git+https://github.com/facebookresearch/audiocraft.git
+
 COPY . .
 
 # Klasör ve İzin Yapılandırması (Fail-safe)

@@ -12,6 +12,7 @@ networks:
 volumes:
   local_rabbitmq_data:
   local_minio_data:
+  local_audio_audiogen_model_cache:
 
 services:
   # 1. BAĞIMLILIK: RABBITMQ (Olay Veriyolu)
@@ -69,7 +70,7 @@ services:
 
   # 3. ANA SERVİS: AUDIO-AUDIOGEN
   audio-audiogen-service:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     container_name: local-audiogen-service
@@ -78,6 +79,8 @@ services:
       - LOG_LEVEL=debug
       - LOG_FORMAT=json
       - TENANT_ID=local_test
+      # Çevre Değişkeni Olarak Modelin Belirtilmesi
+      - AUDIOGEN_MODEL_ID=facebook/audiogen-medium
       # mTLS Ayarları
       - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
       - AUDIOGEN_SERVICE_CERT_PATH=/sentiric-certificates/certs/audio-audiogen-service-chain.crt
@@ -90,7 +93,7 @@ services:
       - RABBITMQ_URL=amqp://sentiric:sentiric_pass@rabbitmq:5672/%2f
     volumes:
       - "../sentiric-certificates:/sentiric-certificates:ro"
-      - "./model-cache:/app/model-cache" # Modelleri local'e indirsin, her seferinde silinmesin
+      - local_audio_audiogen_model_cache:/app/model-cache
     ports:
       - "16320:16320" # HTTP (Health/Metrics)
       - "16321:16321" # gRPC

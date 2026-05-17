@@ -1,4 +1,4 @@
-# 1. Ses ve Model Altyapısı (Transformers'dan önce kurulu olmalı)
+# 1. Ses ve Model Altyapısı
 sentencepiece==0.2.0
 encodec==0.1.1
 librosa==0.10.2
@@ -6,10 +6,26 @@ soundfile==0.12.1
 scipy==1.13.1
 einops>=0.7.0
 
+# [CRITICAL FIX]: AudioCraft Yan Bağımlılıkları (EKSİKSİZ LİSTE)
+num2words
+spacy
+flashy>=0.0.1
+hydra-core>=1.1
+hydra-colorlog
+julius
+demucs
+av
+xformers
+tqdm
+torchmetrics
+pesq
+pystoi
+torchdiffeq
+torchvision
+
 # 2. Sentiric ML Stack (OmniVoice Alignment)
 torch==2.5.1
 torchaudio==2.5.1
-# AudioGen'in en kararlı olduğu versiyon
 transformers[audio]==4.46.3
 accelerate>=0.29.0
 
