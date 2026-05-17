@@ -41,7 +41,6 @@ RUN mkdir -p /app/model-cache && \
 
 USER appuser
 ENV HF_HOME="/app/model-cache"
-ENV TRANSFORMERS_CACHE="/app/model-cache"
 ENV HF_HUB_DISABLE_PROGRESS_BARS=1
 
 EXPOSE 16320 16321

@@ -24,12 +24,6 @@ class AudioGenEngine:
         logger.info(f"Loading SFX Engine via AudioCraft: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
             self.model = AudioGen.get_pretrained(settings.MODEL_ID)
-            
-            # [CRITICAL OPTIMIZATION]: VRAM Kullanımını 6GB'dan 3GB'a Düşürme
-            if settings.DEVICE == "cuda":
-                # Sadece Ana Dil Modelini (LM) 16-bit'e indirgiyoruz. 
-                # (EnCodec modeli ses bozulmaması için orijinal halinde kalıyor)
-                self.model.lm.to(dtype=torch.float16)
                 
             self.model.set_generation_params(use_sampling=True, top_k=250)
             logger.info("AudioGen Ready.", event_id="MODEL_READY")
