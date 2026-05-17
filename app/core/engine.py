@@ -13,6 +13,8 @@ logger = structlog.get_logger()
 class AudioGenEngine:
     def __init__(self):
         self.model = None
+        # GPU'yu korumak için eşzamanlılığı 1 ile sınırlıyoruz.
+        self.semaphore = asyncio.Semaphore(1)
         self.s3 = boto3.client('s3', 
             endpoint_url=settings.S3_ENDPOINT, 
             aws_access_key_id=settings.S3_ACCESS_KEY, 
@@ -24,46 +26,57 @@ class AudioGenEngine:
         logger.info(f"Loading SFX Engine via AudioCraft: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
             self.model = AudioGen.get_pretrained(settings.MODEL_ID)
-                
+            # Not: float16'yı kaldırdık, orijinal hassasiyetle çalışıyoruz.
             self.model.set_generation_params(use_sampling=True, top_k=250)
             logger.info("AudioGen Ready.", event_id="MODEL_READY")
         except Exception as e:
             logger.error(f"Load Fail: {e}", event_id="MODEL_INIT_FAIL")
 
     async def generate_async(self, prompt: str, duration: int, job_id: str, trace_id: str, tenant_id: str):
-        logger.info(f"Generating SFX for: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
-        
-        base_path = f"/tmp/{job_id}"
-        actual_path = f"{base_path}.wav"
-        
-        def render():
-            self.model.set_generation_params(duration=duration)
-            with torch.inference_mode():
-                wav = self.model.generate([prompt])
+        # KRİTİK: Tüm fonksiyon içeriği bu 'async with' bloğunun altında girintili olmalı!
+        async with self.semaphore:
+            logger.info(f"Generating SFX for: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
             
-            # audio_write otomatik olarak .wav uzantısını dosyanın sonuna ekler.
-            audio_write(base_path, wav[0].cpu(), self.model.sample_rate, strategy="loudness", loudness_compressor=True)
+            base_path = f"/tmp/{job_id}"
+            actual_path = f"{base_path}.wav"
             
-        try:
-            await asyncio.to_thread(render)
-            object_name = f"sfx/{job_id}.wav"
-            
-            await asyncio.to_thread(self.s3.upload_file, actual_path, settings.S3_BUCKET, object_name)
-            
-            if os.path.exists(actual_path): os.remove(actual_path)
-            
-            s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
-            logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
-            await self._publish_event("media.generation.completed", trace_id, job_id, tenant_id, True, s3_uri)
+            def render():
+                # Model parametrelerini ayarla ve üretimi yap
+                self.model.set_generation_params(duration=duration)
+                with torch.inference_mode():
+                    wav = self.model.generate([prompt])
                 
-        except Exception as e:
-            err_msg = str(e)
-            logger.error(f"SFX Render failed: {err_msg}", event_id="SFX_GEN_FAIL", trace_id=trace_id)
-            if os.path.exists(actual_path): os.remove(actual_path)
-            await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
-        finally:
-            if settings.DEVICE == "cuda": 
-                torch.cuda.empty_cache()
+                # Sesi dosyaya yaz
+                audio_write(base_path, wav[0].cpu(), self.model.sample_rate, strategy="loudness", loudness_compressor=True)
+                
+            try:
+                # GPU işlemini thread içinde çalıştır (Event loop'u bloklamamak için)
+                await asyncio.to_thread(render)
+                
+                # S3'e yükle
+                object_name = f"sfx/{job_id}.wav"
+                await asyncio.to_thread(self.s3.upload_file, actual_path, settings.S3_BUCKET, object_name)
+                
+                if os.path.exists(actual_path): 
+                    os.remove(actual_path)
+                
+                s3_uri = f"s3://{settings.S3_BUCKET}/{object_name}"
+                logger.info("SFX uploaded", event_id="SFX_GEN_SUCCESS", trace_id=trace_id, uri=s3_uri)
+                
+                # RabbitMQ'ya başarı bilgisini uçur
+                await self._publish_event("media.generation.completed", trace_id, job_id, tenant_id, True, s3_uri)
+                    
+            except Exception as e:
+                err_msg = str(e)
+                logger.error(f"SFX Render failed: {err_msg}", event_id="SFX_GEN_FAIL", trace_id=trace_id)
+                if os.path.exists(actual_path): 
+                    os.remove(actual_path)
+                await self._publish_event("media.generation.failed", trace_id, job_id, tenant_id, False, "", err_msg)
+            finally:
+                # Belleği temizle (Bu kilit içindeyken çok önemli)
+                if settings.DEVICE == "cuda": 
+                    torch.cuda.empty_cache()
+        # Kilit (Semaphore) tam burada serbest bırakılır ve sıradaki iş içeri alınır.
 
     async def _publish_event(self, event_type, trace_id, job_id, tenant_id, success, uri, err=""):
         try:

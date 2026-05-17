@@ -81,6 +81,7 @@ services:
       - TENANT_ID=local_test
       # Çevre Değişkeni Olarak Modelin Belirtilmesi
       - AUDIOGEN_MODEL_ID=facebook/audiogen-medium
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True      
       # mTLS Ayarları
       - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
       - AUDIOGEN_SERVICE_CERT_PATH=/sentiric-certificates/certs/audio-audiogen-service-chain.crt
