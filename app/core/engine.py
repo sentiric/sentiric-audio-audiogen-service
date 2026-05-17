@@ -6,33 +6,36 @@ from app.core.config import settings
 from sentiric.event.v1 import event_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# --- [CRITICAL] DYNAMIC DISCOVERY LOGIC ---
+# --- [FINAL BOSS IMPORT STRATEGY] ---
 AudioGenForConditionalGeneration = None
-AutoProcessor = None
+AudioGenProcessor = None
 
 try:
-    # Deneme 1: Standart Top-Level Import
-    from transformers import AudioGenForConditionalGeneration as AGModel, AutoProcessor as AP
-    AudioGenForConditionalGeneration, AutoProcessor = AGModel, AP
+    # Deneme 1: Modern Auto API (En güvenlisi)
+    from transformers import AutoProcessor, AutoModelForTextToWaveform
+    AudioGenProcessor = AutoProcessor
+    AudioGenForConditionalGeneration = AutoModelForTextToWaveform
+    logger_init = structlog.get_logger()
+    logger_init.info("AudioGen loaded via AutoModel API", event_id="IMPORT_SUCCESS")
 except ImportError:
     try:
-        # Deneme 2: v4.45+ Alt Modül Yolu (Underscore)
-        import transformers.models.audio_gen.modeling_audio_gen as m
-        import transformers.models.audio_gen.processing_audio_gen as p
-        AudioGenForConditionalGeneration = m.AudioGenForConditionalGeneration
-        AutoProcessor = p.AudioGenProcessor
+        # Deneme 2: Doğrudan Sınıf İsimleri
+        from transformers import AudioGenForConditionalGeneration as AG, AudioGenProcessor as AP
+        AudioGenForConditionalGeneration, AudioGenProcessor = AG, AP
+        logger_init = structlog.get_logger()
+        logger_init.info("AudioGen loaded via Explicit Classes", event_id="IMPORT_SUCCESS")
     except ImportError:
+        # Deneme 3: Fiziksel Klasör Yolları (v4.44 - v4.46 arası değişimler için)
         try:
-            # Deneme 3: Bazı sürümlerdeki alternatif yol
-            from transformers import AudioGenProcessor
-            from transformers.models.audiogen.modeling_audiogen import AudioGenForConditionalGeneration as AGModel
-            AudioGenForConditionalGeneration = AGModel
-            AutoProcessor = AudioGenProcessor
-        except ImportError as e:
-            raise ImportError(f"FATAL: AudioGen classes not found in any known HF path. Dependencies: {e}")
+            from transformers.models.audio_gen.modeling_audio_gen import AudioGenForConditionalGeneration as AG
+            from transformers.models.audio_gen.processing_audio_gen import AudioGenProcessor as AP
+            AudioGenForConditionalGeneration, AudioGenProcessor = AG, AP
+            logger_init = structlog.get_logger()
+            logger_init.info("AudioGen loaded via Absolute Paths", event_id="IMPORT_SUCCESS")
+        except Exception as e:
+            raise ImportError(f"FATAL: AudioGen classes not found. Requirements missing? {e}")
 
 logger = structlog.get_logger()
-logger.info("AudioGen Engine Classes Resolved", event_id="IMPORT_SUCCESS")
 
 class AudioGenEngine:
     def __init__(self):
@@ -48,8 +51,8 @@ class AudioGenEngine:
     def initialize(self):
         logger.info(f"Loading SFX Engine: {settings.MODEL_ID}", event_id="MODEL_INIT")
         try:
-            # Dinamik olarak çözülen sınıfları kullanıyoruz
-            self.processor = AutoProcessor.from_pretrained(settings.MODEL_ID)
+            # Model yüklenirken VRAM optimizasyonu
+            self.processor = AudioGenProcessor.from_pretrained(settings.MODEL_ID)
             self.model = AudioGenForConditionalGeneration.from_pretrained(
                 settings.MODEL_ID, 
                 torch_dtype=torch.float16 if settings.DEVICE == "cuda" else torch.float32
@@ -61,14 +64,13 @@ class AudioGenEngine:
             logger.error(f"Load Fail: {e}", event_id="MODEL_INIT_FAIL")
 
     async def generate_async(self, prompt: str, duration: int, job_id: str, trace_id: str, tenant_id: str):
-        logger.info(f"Generating SFX: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
+        logger.info(f"Generating SFX for: {prompt}", event_id="SFX_GEN_START", trace_id=trace_id)
         path = f"/tmp/{job_id}.wav"
         
         def render():
             inputs = self.processor(text=[prompt], padding=True, return_tensors="pt").to(settings.DEVICE)
-            # ~50 token = 1 saniye. Max 10 saniye sınırı.
+            # AudioGen: ~50 token = 1 saniye
             tokens = min(duration * 50, 500) 
-            
             with torch.inference_mode():
                 audio_values = self.model.generate(**inputs, max_new_tokens=tokens)
             
