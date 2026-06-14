@@ -1,18 +1,32 @@
+# Git
 .git
 .github
+.gitignore
+
+# IDE
 .vscode
 .idea
+*.swp
+
+# Python Caches
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-build/
-dist/
-.eggs/
+*.py[codz]
+*.so
+
+# Environments
 .venv/
 venv/
-target/
-*.log
+env/
+
+# [KRİTİK]: Model ve Test Çöpleri
+model-cache/
+models/
+huggingface/
+.cache/
+*.mp4
+*.png
+*.jpg
+*.wav
+
+# Env
 .env
